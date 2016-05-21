@@ -1,148 +1,122 @@
 #!/usr/bin/env python
-import boto3
-import gzip
-import os
+from __future__ import print_function
+
 import json
-from pprint import pprint
+import urllib
+import boto3
+import os
+import gzip
+import botocore
 
-bucket_name = 'dev-cloudtrail-uaa'
-source_dir = "/home/ubuntu/cloudTrailIn/"
-dest_dir = "/home/ubuntu/cloudTrailOut/"
-results = {}
-global global_results
+cloud_trail_reduce_bucket = 'dev-cloudtrailreduce-uaa' #this is *not* the target bucket for cloud trail log events!
+s3resource = boto3.resource( 's3' )
+s3client = boto3.client('s3')
 
-s3 = boto3.resource( 's3' )
-bucket = s3.Bucket( bucket_name )
-for key in bucket.objects.all():
-	concatKey = ( key.key ).replace( '/','' )
-	src_name = '/home/ubuntu/cloudTrailIn/%s' % concatKey
-	object = s3.Object( bucket_name, key.key ).download_file( src_name )
-	base = os.path.basename( src_name )
-	dest_name = os.path.join( dest_dir, base[:-3] )
-	with gzip.open( src_name, 'rb' ) as infile:
-		with open( dest_name, 'w' ) as outfile:
-			for line in infile:
-				outfile.write( line )			
-
-	with open( dest_name ) as data_file:
-		try:
-			cloudTrailIngestionDate = ((dest_name.split('-')[4]).split('_')[1]).split('T')[0]
-			data = json.load(data_file)
-			records = data['Records']
-			for record in records:
-				event_name = record['eventName']
-				event_source = record['eventSource']
-				type = record['userIdentity']['type']
-				arn = record['userIdentity']['arn']
-				if 'root' in arn:
-					iamId = 'root'
-				else:
-					iamId = str(arn).split('/')[1]
-				record_parsed = {'type': type, 'events': [{'event_name': event_name, 'event_source': event_source}]}
-				if iamId not in results:
-					results[iamId] = record_parsed
-					print ( '#########################added iamId: %s from %s' % ( iamId, cloudTrailIngestionDate ) )
-					pprint ( record_parsed )
-					pprint ( record ) # DEBUG
-				else:
-					match = False
-					for event in results[iamId]['events']:
-						if event == record_parsed['events']:
-							match = True
-							break
-					if match:
-						break
-					else:
-						results[iamId]['events'].append(record_parsed['events'][0])
-						print( '#########################added EVENT to iamId: %s from %s' % ( iamId, cloudTrailIngestionDate ))
-						pprint ( record_parsed['events'])
-						pprint ( record ) # DEBUG
-				global_results = results 
-		except Exception, e:
-			print(str(e))	
+def init_policy_template ( cloud_trail_reduce_bucket ):
+	exists = True
 	try:
-		os.chmod( src_name, 777 )
-		os.remove( src_name )
-		os.chmod( dest_name, 777 )
-		os.remove( dest_name )
-	except OSError:
-		pass
+		s3resource.Object(cloud_trail_reduce_bucket, 'iam.json').load()
+	except botocore.exceptions.ClientError as e:
+		if e.response['Error']['Code'] == "404":
+			exists = False
+		else:
+			raise e
+	if not exists:
+		data = []
+		with open('/tmp/iam.json', 'w') as outfile:
+			json.dump(data, outfile)
+		s3client.upload_file('/tmp/iam.json', cloud_trail_reduce_bucket, 'iam.json')
+
 		
-with open('/home/ubuntu/results.json', 'w') as f:
-    json.dump(global_results, f)
+def load_policy_template ( cloud_trail_reduce_bucket ):
+	try:
+		object = s3resource.Object( cloud_trail_reduce_bucket, 'iam.json' ).download_file( '/tmp/iam.json' )
+	except:
+		raise Exception('Exception ocurred retrieving current iam.json from S3')
+	with open( '/tmp/iam.json' ) as data_file:
+		try:
+			policy_template = json.load(data_file)
+		except:
+			raise Exception('Exception ocurred when parsing s3::%s/iam.json to JSON object' % cloud_trail_reduce_bucket )
+	return policy_template
 	
 	
-'''
-#!/usr/bin/env python
-import boto3
-import gzip
-import os
-import json
-from pprint import pprint
-
-bucket_name = 'dev-cloudtrail-uaa'
-source_dir = "/home/ubuntu/cloudTrailIn/"
-dest_dir = "/home/ubuntu/cloudTrailOut/"
-results = {}
-global global_results
-
-s3 = boto3.resource( 's3' )
-bucket = s3.Bucket( bucket_name )
-for key in bucket.objects.all():
-	concatKey = ( key.key ).replace( '/','' )
-	src_name = '/home/ubuntu/cloudTrailIn/%s' % concatKey
-	object = s3.Object( bucket_name, key.key ).download_file( src_name )
-	base = os.path.basename( src_name )
-	dest_name = os.path.join( dest_dir, base[:-3] )
-	with gzip.open( src_name, 'rb' ) as infile:
-		with open( dest_name, 'w' ) as outfile:
-			for line in infile:
-				outfile.write( line )			
-
-	with open( dest_name ) as data_file:
-		try:
-			cloudTrailIngestionDate = ((dest_name.split('-')[4]).split('_')[1]).split('T')[0]
-			data = json.load(data_file)
-			records = data['Records']
-			for record in records:
-				event_name = record['eventName']
-				event_source = record['eventSource']
-				type = record['userIdentity']['type']
-				arn = record['userIdentity']['arn']
-				if 'root' in arn:
-					iamId = 'root'
-				else:
-					iamId = str(arn).split('/')[1]
-				record_parsed = {'type': type, 'events': [{'event_name': event_name, 'event_source': event_source}]}
-				if iamId not in results:
-					results[iamId] = record_parsed
-					print ( '#########################added iamId: %s from %s' % ( iamId, cloudTrailIngestionDate ) )
-					pprint ( record_parsed )
-					pprint ( record ) # DEBUG
-				else:
-					match = False
-					for event in results[iamId]['events']:
-						if event == record_parsed['events']:
-							match = True
-							break
-					if match:
-						break
-					else:
-						results[iamId]['events'].append(record_parsed['events'][0])
-						print( '#########################added EVENT to iamId: %s from %s' % ( iamId, cloudTrailIngestionDate ))
-						pprint ( record_parsed['events'])
-						pprint ( record ) # DEBUG
-				global_results = results 
-		except Exception, e:
-			print(str(e))	
+def get_trail_gzip(bucket, key):
 	try:
-		os.chmod( src_name, 777 )
-		os.remove( src_name )
-		os.chmod( dest_name, 777 )
-		os.remove( dest_name )
-	except OSError:
-		pass
+		object = s3resource.Object( bucket, key ).download_file( '/tmp/in.gzip' )
+	except:
+		raise Exception('Exception ocurred retrieving CloudTrail object S3::%s/%s' % (bucket,key))
+
 		
-with open('/home/ubuntu/results.json', 'w') as f:
-    json.dump(global_results, f)
-'''
+def extract_trail_gzip():
+	try:
+		with gzip.open( '/tmp/in.gzip', 'rb' ) as infile:
+			with open( '/tmp/out.json', 'w' ) as outfile:
+				for line in infile:
+					outfile.write( line )
+	except:
+		raise Exception('Exception ocurred when extacting /tmp/in.gzip /tmp/out.json')
+
+		
+def load_trail_records():
+	with open( '/tmp/out.json' ) as data_file:
+		try:
+			trail_json = json.load(data_file)
+			records = trail_json['Records']
+		except:
+			raise Exception('Exception ocurred when parsing /tmp/out.json to JSON object')
+	return records
+	
+	
+def munge_record ( record ):
+	try:
+		event_name = record['eventName']
+		event_source = record['eventSource']
+		type = record['userIdentity']['type']
+		arn = record['userIdentity']['arn']
+		if 'root' in arn:
+			iamId = 'root'
+		else:
+			iamId = str(arn).split('/')[1]
+	except:
+		raise Exception('Exception ocurred when munging record: %s' % ( record ))
+	return {'iamId': iamId, 'type': type, 'events': [{'event_name': event_name, 'event_source': event_source}]}
+
+
+def parse_policy_template ( policy_template, record ):
+	match = False
+	for existing_record in policy_template:
+		if existing_record['iamId'] == record['iamId']:
+		    match = True
+		    for event in existing_record['events']:
+		        if event == record['events'][0]:
+		            return policy_template
+	            else:
+	                existing_record['events'].append(record['events'][0])
+	if not match:
+		policy_template.append(record)
+	return policy_template
+
+
+def post_policy_template ( policy_template, cloud_trail_reduce_bucket ):
+    with open('/tmp/iamOut.json', 'w') as f:
+        json.dump(policy_template, f, indent=4)
+    s3client.upload_file('/tmp/iamOut.json', cloud_trail_reduce_bucket, 'iam.json')
+    
+
+def lambda_handler(event, context):
+	init_policy_template ( cloud_trail_reduce_bucket )
+	policy_template = load_policy_template ( cloud_trail_reduce_bucket )
+	bucket = event['Records'][0]['s3']['bucket']['name']
+	
+	for record in event['Records']:
+		key = urllib.unquote_plus(record['s3']['object']['key']).decode('utf8')
+		get_trail_gzip(bucket, key)
+		extract_trail_gzip()
+		trail_records = load_trail_records()
+
+		for record in trail_records:
+			record = munge_record ( record )
+			policy_template = parse_policy_template( policy_template, record )
+	print ( policy_template )
+	post_policy_template ( policy_template, cloud_trail_reduce_bucket )
